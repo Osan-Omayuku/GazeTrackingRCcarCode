@@ -16,7 +16,7 @@ _🚀 Quick note: I'm looking for job opportunities as a software developer, for
 Clone this project:
 
 ```shell
-git clone https://github.com/antoinelame/GazeTracking.git
+git clone (https://github.com/Osan-Omayuku/GazeTrackingRCcarCode.git) based in part by by Antoine Laime's wonderful already existing repo
 ```
 
 ### For Pip install
