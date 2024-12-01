@@ -26,6 +26,9 @@ def connect_arduino(port='COM7', baudrate=9600):
         return None
 
 arduino = connect_arduino()
+if not arduino:
+    logging.warning("Proceeding without Arduino connection. Commands will not be sent.")
+
 print("Starting gaze tracking with head movement detection...")
 
 # Calibration parameters
@@ -79,45 +82,45 @@ def calibrate():
                 captured = True
             else:
                 logging.warning(f"No face detected for {direction}. Attempt {attempts}.")
-
-            cv2.imshow("Calibration", frame)
-            if cv2.waitKey(1) == 27:
-                logging.info("Calibration interrupted by user.")
-                return False
+                time.sleep(1)  # Add delay between attempts
 
         if not captured:
             logging.error(f"Calibration failed for {direction} after {attempts} attempts.")
+            return False  # Exit calibration if a critical direction fails
     return True
 
 # Start calibration process
 calibrated = calibrate()
 cv2.destroyAllWindows()
 
-# Timer before using calibrated values
-start_time = time.time()
-use_calibrated_values = False
+# Exit if calibration is incomplete
+if not calibrated or calibration_data.get("center") is None:
+    logging.error("Calibration incomplete. Please ensure all directions are calibrated.")
+    webcam.release()
+    if arduino:
+        arduino.close()
+    exit()
 
-# Initialize the last_print_time variable
-last_print_time = time.time()
+# Timer for FPS calculation
+fps = 0
+fps_start_time = time.time()
+frame_count = 0
 
-# Main tracking loop with head movement detection
-while calibrated:
+# Main tracking loop with fallback to head movement detection
+while True:
     ret, frame = webcam.read()
     if not ret:
         logging.error("Frame capture failed in main loop.")
         break
 
-    # Limit processing to every 30 ms to reduce CPU load
-    time.sleep(0.03)
+    frame_count += 1
 
     # Refresh gaze tracking
     gaze.refresh(frame)
     frame = gaze.annotated_frame()
-    text = "Calibration values not yet in use" if not use_calibrated_values else ""
-
-    # Check if 15 seconds have passed since calibration
-    if time.time() - start_time > 15:
-        use_calibrated_values = True
+    text = ""
+    head_movement = "C"  # Default to "Centered"
+    accuracy_degrees = 0  # Default accuracy in case no face is detected
 
     # Convert to grayscale for face detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -128,98 +131,58 @@ while calibrated:
         landmarks = predictor(gray, face)
         nose_tip = (landmarks.part(30).x, landmarks.part(30).y)
 
-        # Initialize default deviation values
-        x_deviation = 0
-        y_deviation = 0
-        x_deviation_percent = 0
-        y_deviation_percent = 0
-        head_movement = "c"  # Default to centered if no movement detected
+        # Calculate deviations for head movement detection
+        x_deviation = nose_tip[0] - calibration_data["center"]["nose_tip"][0]
+        y_deviation = nose_tip[1] - calibration_data["center"]["nose_tip"][1]
+        face_width = calibration_data["center"]["face_width"]
+        face_height = calibration_data["center"]["face_height"]
 
-        if use_calibrated_values and "center" in calibration_data:
-            center_data = calibration_data["center"]
-            face_width = center_data["face_width"]
-            face_height = center_data["face_height"]
-
-            # Calculate deviations only if calibrated center data is available
-            x_deviation = nose_tip[0] - center_data["nose_tip"][0]
-            y_deviation = nose_tip[1] - center_data["nose_tip"][1]
-            x_deviation_percent = x_deviation / face_width if face_width != 0 else 0
-            y_deviation_percent = y_deviation / face_height if face_height != 0 else 0
-
-            # Determine head movement
-            if x_deviation < -0.15 * face_width:
-                head_movement = "L"
-                text = "Head turned left"
-            elif x_deviation > 0.15 * face_width:
-                head_movement = "R"
-                text = "Head turned right"
-            elif y_deviation < -0.2 * face_height:
-                head_movement = "F"
-                text = "Head tilted up"
-            elif y_deviation > 0.2 * face_height:
-                head_movement = "B"
-                text = "Head tilted down"
-            else:
-                head_movement = "c"
-                text = "Head centered"
+        # Determine head movement
+        if x_deviation < -0.15 * face_width:
+            head_movement = "L"
+            text = "Head turned left"
+        elif x_deviation > 0.15 * face_width:
+            head_movement = "R"
+            text = "Head turned right"
+        elif y_deviation < -0.2 * face_height:
+            head_movement = "U"
+            text = "Head tilted up"
+        elif y_deviation > 0.2 * face_height:
+            head_movement = "D"
+            text = "Head tilted down"
         else:
-            text = "Calibration values not yet in use"
+            text = "Head centered"
 
-        # Send head movement command to Arduino if connected
-        if arduino and use_calibrated_values:
-            try:
-                arduino.write(head_movement.encode())
-                logging.info(f"Sent to Arduino: {head_movement}")
-            except serial.SerialException as e:
-                logging.warning("Lost connection to Arduino: %s", e)
-                arduino = connect_arduino()  # Attempt reconnection
-
-        # Get current time
-        current_time = time.time()
-        if current_time - last_print_time >= 1.0:
-            # Calculate gaze ratios
-            horizontal_ratio = gaze.horizontal_ratio()
-            vertical_ratio = gaze.vertical_ratio()
-
-            # Determine gaze direction
-            if gaze.is_right():
-                gaze_direction = "Looking right"
-            elif gaze.is_left():
-                gaze_direction = "Looking left"
-            elif gaze.is_center():
-                gaze_direction = "Looking center"
-            else:
-                gaze_direction = "Gaze direction unknown"
-
-            # Print gaze ratios and direction
-            print(f"\n--- Gaze and Head Movement Data ---")
-            print(f"Gaze horizontal ratio: {horizontal_ratio}, vertical ratio: {vertical_ratio}")
-            print(f"Gaze direction: {gaze_direction}")
-
-            # Print head movement values
-            print(f"Nose tip position: {nose_tip}")
-            print(f"Deviation from center (pixels): x={x_deviation}, y={y_deviation}")
-            print(f"Deviation from center (%): x={x_deviation_percent*100:.2f}%, y={y_deviation_percent*100:.2f}%")
-            print(f"Head movement detected: {head_movement}")
-            print(f"-----------------------------------\n")
-            last_print_time = current_time
+        # Fallback to head movement if gaze tracking fails
+        if gaze.horizontal_ratio() is None or gaze.vertical_ratio() is None:
+            logging.info("Gaze tracking failed; using head movement as fallback.")
+            if arduino:
+                try:
+                    arduino.write(head_movement.encode())
+                    logging.info(f"Sent to Arduino: {head_movement}")
+                except serial.SerialException as e:
+                    logging.warning("Lost connection to Arduino: %s", e)
+                    arduino = connect_arduino()
+            text += " (Fallback to head movement)"
 
     else:
-        head_movement = "c"
-        text = "No face detected"
-        current_time = time.time()
-        if current_time - last_print_time >= 1.0:
-            print("No face detected.")
-            last_print_time = current_time
+        # No face detected
+        text = "No face detected. Fallback not available."
+        logging.warning("No face detected; gaze tracking and head movement detection unavailable.")
 
-    cv2.putText(frame, text, (90, 60), cv2.FONT_HERSHEY_DUPLEX, 1.6, (147, 58, 31), 2)
+    # FPS Calculation
+    if time.time() - fps_start_time >= 1.0:
+        fps = frame_count / (time.time() - fps_start_time)
+        frame_count = 0
+        fps_start_time = time.time()
+
+    cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     cv2.imshow("Calibrated Head and Gaze Tracking", frame)
 
-    if cv2.waitKey(10) == 27:  # Adjust wait time to ensure OpenCV can refresh the window
-        logging.info("Exiting tracking loop.")
+    if cv2.waitKey(10) == 27:
         break
 
-# Release resources
 webcam.release()
 cv2.destroyAllWindows()
 if arduino:
