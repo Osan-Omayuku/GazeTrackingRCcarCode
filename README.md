@@ -9,7 +9,7 @@ This is a Python (2 and 3) library that provides a **webcam-based eye tracking s
 
 
 
-_🚀 Quick note: I'm looking for job opportunities as a software developer, for exciting projects in ambitious companies. Anywhere in the world. Send me an email!_
+_🚀 Quick note: I'm looking for job opportunities as a software developer, for exciting projects in ambitious companies in the United States. Send me an email!_:oomayuku@purdue.edu
 
 ## Installation
 
